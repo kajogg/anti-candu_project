@@ -11,8 +11,8 @@ for _s in (sys.stdout, sys.stderr):
 DB = os.environ.get("SADARLAYAR_DB", os.path.expanduser("~/.sadarlayar.db"))
 CATS = ["edukasi", "produktif", "sosial", "hiburan", "game", "lainnya"]
 APPS = {"edukasi": ["Ruangguru", "Duolingo", "Khan Academy", "Quipper"],
-        "hiburan": ["YouTube", "Netflix", "TikTok"], "sosial": ["WhatsApp", "Instagram", "Discord"],
-        "game": ["Roblox", "Mobile Legends", "Minecraft", "Free Fire"],
+        "hiburan": ["YouTube", "Netflix", "TikTok"], "sosial": ["WhatsApp", "Instagram", "Discord", "X"],
+        "game": ["Roblox", "Mobile Legends", "Minecraft", "Free Fire", "Genshin Impact"],
         "produktif": ["Google Docs", "Canva", "Calculator"]}
 ACTIVITIES = {"membaca buku": 0.5, "olahraga": 0.5, "membantu pekerjaan rumah": 0.5,
               "belajar / PR": 0.3, "kegiatan kreatif": 0.4}
