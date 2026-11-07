@@ -1,4 +1,12 @@
-# SadarLayar
+
+Team Member :
+- Ica Utami Eka Putri (2606826)
+- Liandra Rabbani (2607267)
+- Muhammad Fadhli Fadillah (2608578)
+- Zaidan Faaris Abidi (2608947)
+
+
+# Anti Candu
 
 Aplikasi terminal untuk membantu keluarga membangun kebiasaan layar yang sehat. Orang tua bisa melihat laporan dan menetapkan aturan. Anak bisa melihat datanya sendiri, mengatur batas pribadi, dan mendapat waktu bonus dari kegiatan di luar layar.
 
