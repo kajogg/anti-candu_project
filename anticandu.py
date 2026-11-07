@@ -1,4 +1,5 @@
 import getpass, hashlib, os, random, re, secrets, shutil, sqlite3, subprocess, sys, textwrap, time
+import getpass, hashlib, os, random, re, secrets, shutil, sqlite3, subprocess, sys, time
 from collections import defaultdict
 from datetime import datetime, timedelta, date
 from statistics import mean, pstdev
@@ -13,6 +14,8 @@ CATS = ["edukasi", "produktif", "sosial", "hiburan", "game", "lainnya"]
 APPS = {"edukasi": ["Ruangguru", "Duolingo", "Khan Academy", "Quipper"],
         "hiburan": ["YouTube", "Netflix", "TikTok"], "sosial": ["WhatsApp", "Instagram", "Discord"],
         "game": ["Roblox", "Mobile Legends", "Minecraft", "Free Fire"],
+        "hiburan": ["YouTube", "Netflix", "TikTok"], "sosial": ["WhatsApp", "Instagram", "Discord", "X"],
+        "game": ["Roblox", "Mobile Legends", "Minecraft", "Free Fire", "Genshin Impact"],
         "produktif": ["Google Docs", "Canva", "Calculator"]}
 ACTIVITIES = {"membaca buku": 0.5, "olahraga": 0.5, "membantu pekerjaan rumah": 0.5,
               "belajar / PR": 0.3, "kegiatan kreatif": 0.4}
@@ -130,6 +133,7 @@ def connect():
     if not db.execute("SELECT 1 FROM rule").fetchone():
         db.executemany("INSERT INTO rule VALUES(?,?)",
                        [(re.escape(a.lower().replace(" ", "")), c_) for c_, l in APPS.items() for a in l])
+                       [(re.escape(a.lower().replace(" ", "")), c) for c, l in APPS.items() for a in l])
         db.commit()
     return db
 
@@ -325,6 +329,63 @@ def p_transparency(db, ch, d):
     return "Transparansi", L
 
 # ───────────────────────────── Monitor ─────────────────────────────
+def bar(v, m, w=20): f = 0 if m <= 0 else min(w, round(w * v / m)); return "█" * f + "░" * (w - f)
+def spark(vals): mx = max(vals) or 1; return "".join(" ▁▂▃▄▅▆▇█"[min(8, int(v / mx * 8 + (0.999 if v > 0 else 0)))] for v in vals)
+ICON = {"ok": "✔", "info": "ℹ", "warn": "▲", "bad": "✖"}
+
+def p_today(db, ch, d):
+    st = stats(db, ch, d); lim = eff_limit(db, ch, d); p = st["total"] / lim * 100 if lim else 0
+    L = [f"{ch['name']} ({ch['age']} th) - {d:%a %d %b %Y}",
+         f" Total {bar(st['total'], lim, 30)} {fmt_min(st['total'])}/{fmt_min(lim)} ({p:.0f}%)", ""]
+    for c in CATS:
+        if st["cat"][c] > 0: L.append(f" {c:<10}{bar(st['cat'][c], st['total'], 24)} {fmt_min(st['cat'][c])}")
+    L += ["", f" Pertama pakai {clock(st['first'])}   Terakhir {clock(st['last'])}   Blok tanpa jeda terpanjang {fmt_min(st['longest'])}",
+          f" Aktivitas jam tidur ({ch['bed_start']}-{ch['bed_end']}): {fmt_min(st['night'])}",
+          "", " Per jam  " + spark(st["hourly"]), "          0     6     12    18    "]
+    for label, m in quiet_hits(db, ch, d): L.append(f" Melanggar blok '{label}': {fmt_min(m)}")
+    return L
+
+def p_week(db, ch, d):
+    L = [f"7 hari terakhir - {ch['name']}"]; tot = []; edu = fun = 0
+    for i in range(6, -1, -1):
+        x = d - timedelta(days=i); st = stats(db, ch, x); lim = eff_limit(db, ch, x); tot.append(st["total"])
+        edu += st["cat"]["edukasi"] + st["cat"]["produktif"]; fun += st["cat"]["hiburan"] + st["cat"]["game"]
+        L.append(f" {x:%a %d/%m} {bar(st['total'], lim, 20)} {fmt_min(st['total']):>7}  malam {fmt_min(st['night']):>6}  mulai {clock(st['first'])}")
+    L += ["", f" Rata-rata {fmt_min(mean(tot))}/hari   Edukasi+produktif vs hiburan+game: {edu / max(1, edu + fun) * 100:.0f}% : {fun / max(1, edu + fun) * 100:.0f}%"]
+    return L
+
+def p_insights(db, ch, d): return [f"Wawasan - {ch['name']}"] + [f" {ICON[k]} {t}" for k, t in insights(db, ch, d)]
+
+def p_summary(db, kids, d):
+    L = [f"Ringkasan keluarga - {d:%A %d %B %Y}", ""]
+    for ch in kids:
+        st = stats(db, ch, d); lim = eff_limit(db, ch, d)
+        top = max(st["cat"].items(), key=lambda x: x[1], default=("-", 0))[0]
+        warns = sum(1 for k, _ in insights(db, ch, d) if k in ("warn", "bad"))
+        L += [f" {ch['name']:<10}{bar(st['total'], lim, 24)} {fmt_min(st['total'])}/{fmt_min(lim)}  dominan: {top}",
+              f"            malam {fmt_min(st['night'])} | pertama {clock(st['first'])} | {warns} peringatan"]
+    return L
+
+def p_activity(db, ch, d):
+    L = [f"Aktivitas offline - {ch['name']}", f" Bonus hari ini: {bonus_today(db, ch['id'], d)}/{BONUS_CAP} menit", "",
+         " Pilihan (nomor) -> tarif bonus:"] + [f"   {i}. {k:<26}x{v}" for i, (k, v) in enumerate(ACTIVITIES.items(), 1)] + [""]
+    for r in db.execute("SELECT * FROM activity WHERE child_id=? ORDER BY ts DESC LIMIT 12", (ch["id"],)):
+        L.append(f" {datetime.fromtimestamp(r['ts']):%d/%m %H:%M}  {r['name']:<26}{r['minutes']}m")
+    return L
+
+def p_rules(db, ch, d):
+    L = [f"Aturan - {ch['name']}", f" Batas harian orang tua : {fmt_min(ch['daily_limit'])}",
+         f" Batas pilihan anak     : {fmt_min(ch['self_limit']) if ch['self_limit'] else '-'}",
+         f" Jam tidur              : {ch['bed_start']}-{ch['bed_end']}", "", " Blok tenang:"]
+    for q in db.execute("SELECT * FROM quiet WHERE child_id=?", (ch["id"],)): L.append(f"   {q['label']:<18}{q['start']}-{q['end']}  hari:{q['days']}")
+    return L
+
+def p_transparency(db, ch, d):
+    L = NOTICE.split("\n") + ["", "Log audit terakhir:"]
+    for r in db.execute("SELECT * FROM audit ORDER BY ts DESC LIMIT 15"):
+        L.append(f" {datetime.fromtimestamp(r['ts']):%d/%m %H:%M} [{r['actor']}] {r['action']}")
+    return L
+
 def active_app():
     try:
         if os.name == "nt":
@@ -346,6 +407,8 @@ def live_alert(msg, color):
 def monitor(db, ch, interval=5, probe=active_app):
     show("Transparansi", notice_lines(), "cyan")
     info(f"Memantau {c(ch['name'], 'bold')} tiap {interval}s. Tekan Ctrl+C untuk berhenti.\n")
+def monitor(db, ch, interval=5, probe=active_app):
+    print(NOTICE + f"\n\nMemantau {ch['name']} tiap {interval}s. Ctrl+C untuk berhenti.\n")
     cur = start = cont = None; fired = set(); idle_since = None
     def flush(now):
         if cur and now - start >= 3: add_session(db, ch["id"], cur, start, now); db.commit()
@@ -371,6 +434,13 @@ def monitor(db, ch, interval=5, probe=active_app):
     except KeyboardInterrupt: flush(time.time()); print("\n"); ok("Berhenti. Data tersimpan.")
 
 # ───────────────────────────── Data demo ─────────────────────────────
+            for th, msg in ((80, "80% batas tercapai"), (100, "BATAS HARIAN TERCAPAI - saatnya istirahat/aktivitas lain")):
+                if used / lim * 100 >= th and (d, th) not in fired: fired.add((d, th)); print(f"\a[{datetime.now():%H:%M}] {ch['name']}: {msg}")
+            if cont and (now - cont) / 60 >= BREAK_AFTER and ("brk", int(cont)) not in fired:
+                fired.add(("brk", int(cont))); print(f"\a[{datetime.now():%H:%M}] Istirahat 5 menit & lihat jauh 20 detik (aturan 20-20-20).")
+            time.sleep(interval)
+    except KeyboardInterrupt: flush(time.time()); print("\nBerhenti. Data tersimpan.")
+
 def seed(db, pin="1234"):
     for t in ("child", "session", "quiet", "activity", "bonus", "audit"): db.execute(f"DELETE FROM {t}")
     kids = [("Aisyah", 10, 120, "20:30", "05:30", dict(edukasi=.35, hiburan=.35, sosial=.1, game=.15, produktif=.05)),
@@ -394,9 +464,15 @@ def seed(db, pin="1234"):
     ok(f"Data demo siap (PIN orang tua: {c(pin, 'bold')}).")
 
 # ───────────────────────────── Input & menu ─────────────────────────────
+    print(f"Data demo siap (PIN orang tua: {pin}).")
+
+def ask(msg): return input(msg).strip()
+
 def ask_int(msg):
     try: return int(ask(msg))
     except ValueError: return None
+
+def show(lines): print("\n" + "\n".join(lines) + "\n")
 
 def ask_day():
     n = ask_int("Berapa hari lalu? (0 = hari ini): ")
@@ -409,6 +485,7 @@ def pick_child(db):
     kids = all_kids(db)
     if not kids: return None
     show("Pilih anak", [f" {c(f'{i:>2}', 'cyan', 'bold')}  {k['name']} {c('(' + str(k['age']) + ' th)', 'gray')}" for i, k in enumerate(kids, 1)])
+    for i, k in enumerate(kids, 1): print(f"  {i}. {k['name']}")
     n = ask_int("Pilih anak (nomor): ")
     return kids[n - 1] if n and 1 <= n <= len(kids) else None
 
@@ -430,6 +507,22 @@ def menu_set_bed(db, ch):
     if not re.fullmatch(r"\d\d:\d\d-\d\d:\d\d", s): err("Format salah."); return
     a, b = s.split("-"); db.execute("UPDATE child SET bed_start=?, bed_end=? WHERE id=?", (a, b, ch["id"]))
     audit(db, "orang tua", f"ubah jam tidur {ch['name']} {s}"); ok("Jam tidur tersimpan.")
+    for i, (k, v) in enumerate(ACTIVITIES.items(), 1): print(f"  {i}. {k:<26}x{v}")
+    n = ask_int("Nomor aktivitas: "); mn = ask_int("Durasi (menit): ")
+    if not n or not mn or mn <= 0 or not 1 <= n <= len(ACTIVITIES): print("Input tidak valid."); return
+    print(f"+{add_activity(db, ch, list(ACTIVITIES)[n - 1], mn)} menit bonus")
+
+def menu_set_limit(db, ch):
+    v = ask_int("Batas harian baru (menit): ")
+    if not v or v <= 0: print("Input tidak valid."); return
+    db.execute("UPDATE child SET daily_limit=?, self_limit=NULL WHERE id=?", (v, ch["id"]))
+    audit(db, "orang tua", f"ubah batas {ch['name']} -> {v}m"); print("Batas tersimpan.")
+
+def menu_set_bed(db, ch):
+    s = ask("Jam tidur (HH:MM-HH:MM): ")
+    if not re.fullmatch(r"\d\d:\d\d-\d\d:\d\d", s): print("Format salah."); return
+    a, b = s.split("-"); db.execute("UPDATE child SET bed_start=?, bed_end=? WHERE id=?", (a, b, ch["id"]))
+    audit(db, "orang tua", f"ubah jam tidur {ch['name']} {s}"); print("Jam tidur tersimpan.")
 
 def menu_set_self_limit(db, ch):
     v = ask_int(f"Batas harian pilihanmu (menit, maks {ch['daily_limit']}): ")
@@ -454,6 +547,24 @@ def menu_add_rule(db):
     if not pattern or not n or not 1 <= n <= len(CATS): err("Input tidak valid."); return
     db.execute("REPLACE INTO rule VALUES(?,?)", (pattern, CATS[n - 1])); audit(db, "orang tua", f"aturan {pattern}->{CATS[n - 1]}"); db.commit()
     ok("Aturan tersimpan.")
+        audit(db, ch["name"], f"atur batas sendiri {v}m"); print("Batas tersimpan.")
+    else: print("Batas harus antara 15 menit dan batas orang tua.")
+
+def menu_add_child(db):
+    name = ask("Nama anak: "); age = ask_int("Umur: "); lim = ask_int("Batas harian (menit, default 120): ") or 120
+    if not name or not age: print("Input tidak valid."); return
+    try: db.execute("INSERT INTO child(name,age,daily_limit,bed_start,bed_end) VALUES(?,?,?,?,?)", (name, age, lim, "21:00", "05:30")); db.commit()
+    except sqlite3.IntegrityError: print("Nama sudah ada."); return
+    if not db.execute("SELECT 1 FROM meta WHERE k='pin'").fetchone(): set_pin(db, getpass.getpass("Buat PIN orang tua: "))
+    audit(db, "orang tua", f"tambah anak {name}"); print(f"{name} ditambahkan.")
+
+def menu_add_rule(db):
+    pattern = ask("Pola nama aplikasi: ").lower()
+    for i, c in enumerate(CATS, 1): print(f"  {i}. {c}")
+    n = ask_int("Nomor kategori: ")
+    if not pattern or not n or not 1 <= n <= len(CATS): print("Input tidak valid."); return
+    db.execute("REPLACE INTO rule VALUES(?,?)", (pattern, CATS[n - 1])); audit(db, "orang tua", f"aturan {pattern}->{CATS[n - 1]}"); db.commit()
+    print("Aturan tersimpan.")
 
 PARENT_MENU = ["Ringkasan keluarga", "Laporan harian", "Laporan 7 hari", "Wawasan", "Aktivitas offline", "Aturan",
                "Catat aktivitas", "Ubah batas harian", "Ubah jam tidur", "Tambah anak", "Tambah aturan kategori",
@@ -486,6 +597,37 @@ def parent_menu(db):
             if new: cid = new["id"]
             else: err("Pilihan tidak valid.")
         else: err("Pilihan tidak valid.")
+def print_menu(title, items):
+    print(f"\n=== {title} ===")
+    for i, t in enumerate(items, 1): print(f"  {i}. {t}")
+    print("  0. Kembali")
+
+def parent_menu(db):
+    ch = pick_child(db)
+    if not ch: print("Pilihan tidak valid."); return
+    cid = ch["id"]
+    while True:
+        ch = get_child_by_id(db, cid)
+        print_menu(f"MODE ORANG TUA | {ch['name']}", PARENT_MENU)
+        c = ask("Pilih: ")
+        if c == "0": return
+        elif c == "1": show(p_summary(db, all_kids(db), date.today()))
+        elif c == "2": show(p_today(db, ch, ask_day()))
+        elif c == "3": show(p_week(db, ch, date.today()))
+        elif c == "4": show(p_insights(db, ch, date.today()))
+        elif c == "5": show(p_activity(db, ch, date.today()))
+        elif c == "6": show(p_rules(db, ch, date.today()))
+        elif c == "7": menu_log_activity(db, ch)
+        elif c == "8": menu_set_limit(db, ch)
+        elif c == "9": menu_set_bed(db, ch)
+        elif c == "10": menu_add_child(db)
+        elif c == "11": menu_add_rule(db)
+        elif c == "12": monitor(db, ch)
+        elif c == "13":
+            new = pick_child(db)
+            if new: cid = new["id"]
+            else: print("Pilihan tidak valid.")
+        else: print("Pilihan tidak valid.")
 
 def child_menu(db, ch):
     cid = ch["id"]
@@ -520,6 +662,37 @@ def main():
             else: err("Belum ada data anak atau pilihan tidak valid.")
         elif c_ == "3": seed(db)
         else: err("Pilihan tidak valid.")
+
+if __name__ == "__main__":
+    main()
+        print_menu(f"MODE ANAK | {ch['name']}", CHILD_MENU)
+        c = ask("Pilih: ")
+        if c == "0": return
+        elif c == "1": show(p_today(db, ch, ask_day()))
+        elif c == "2": show(p_week(db, ch, date.today()))
+        elif c == "3": show(p_insights(db, ch, date.today()))
+        elif c == "4": show(p_activity(db, ch, date.today()))
+        elif c == "5": menu_log_activity(db, ch)
+        elif c == "6": menu_set_self_limit(db, ch)
+        elif c == "7": show(p_transparency(db, ch, date.today()))
+        else: print("Pilihan tidak valid.")
+
+def main():
+    db = connect()
+    while True:
+        print("\n=== SADARLAYAR ===\n  1. Masuk sebagai orang tua\n  2. Masuk sebagai anak\n  3. Buat data demo\n  0. Keluar")
+        c = ask("Pilih: ")
+        if c == "0": return
+        elif c == "1":
+            if not all_kids(db): print("Belum ada anak. Tambahkan dulu."); menu_add_child(db); continue
+            if check_pin(db, getpass.getpass("PIN orang tua: ")): audit(db, "orang tua", "masuk mode orang tua"); parent_menu(db)
+            else: print("PIN salah.")
+        elif c == "2":
+            ch = pick_child(db)
+            if ch: child_menu(db, ch)
+            else: print("Belum ada data anak atau pilihan tidak valid.")
+        elif c == "3": seed(db)
+        else: print("Pilihan tidak valid.")
 
 if __name__ == "__main__":
     main()
