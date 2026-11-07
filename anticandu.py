@@ -1,4 +1,3 @@
-import getpass, hashlib, os, random, re, secrets, shutil, sqlite3, subprocess, sys, textwrap, time
 import getpass, hashlib, os, random, re, secrets, shutil, sqlite3, subprocess, sys, time
 from collections import defaultdict
 from datetime import datetime, timedelta, date
@@ -12,109 +11,16 @@ for _s in (sys.stdout, sys.stderr):
 DB = os.environ.get("SADARLAYAR_DB", os.path.expanduser("~/.sadarlayar.db"))
 CATS = ["edukasi", "produktif", "sosial", "hiburan", "game", "lainnya"]
 APPS = {"edukasi": ["Ruangguru", "Duolingo", "Khan Academy", "Quipper"],
-        "hiburan": ["YouTube", "Netflix", "TikTok"], "sosial": ["WhatsApp", "Instagram", "Discord"],
+        "hiburan": ["YouTube", "Netflix", "TikTok", "Spotify"], "sosial": ["WhatsApp", "Instagram", "Discord"],
         "game": ["Roblox", "Mobile Legends", "Minecraft", "Free Fire"],
-        "hiburan": ["YouTube", "Netflix", "TikTok"], "sosial": ["WhatsApp", "Instagram", "Discord", "X"],
-        "game": ["Roblox", "Mobile Legends", "Minecraft", "Free Fire", "Genshin Impact"],
         "produktif": ["Google Docs", "Canva", "Calculator"]}
 ACTIVITIES = {"membaca buku": 0.5, "olahraga": 0.5, "membantu pekerjaan rumah": 0.5,
-              "belajar / PR": 0.3, "kegiatan kreatif": 0.4}
+              "belajar / PR": 0.3, "kegiatan kreatif": 0.4, "meditasi": 0.4}
 BONUS_CAP, BREAK_AFTER, TOKEN_GAP = 30, 45, 300
 NOTICE = ("TRANSPARANSI: aplikasi ini hanya mencatat NAMA APLIKASI AKTIF + KATEGORI + waktu.\n"
           "Tidak merekam layar, kamera, mikrofon, judul jendela, pesan, atau lokasi. Anak dapat melihat\n"
           "semua data ini lewat menu Transparansi di mode anak.")
 
-HARI = ["Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu", "Minggu"]
-BULAN = ["Jan", "Feb", "Mar", "Apr", "Mei", "Jun", "Jul", "Agu", "Sep", "Okt", "Nov", "Des"]
-
-# ───────────────────────────── Lapisan tampilan ─────────────────────────────
-USE_COLOR = bool(sys.stdout.isatty() or os.environ.get("FORCE_COLOR")) and not os.environ.get("NO_COLOR")
-if USE_COLOR and os.name == "nt": os.system("")  # aktifkan ANSI di Windows 10+
-
-STY = dict(bold="1", dim="2", red="31", green="32", yellow="33", blue="34", magenta="35", cyan="36", gray="90", white="97")
-CATCOL = dict(edukasi="green", produktif="cyan", sosial="blue", hiburan="magenta", game="yellow", lainnya="gray")
-KINDCOL = dict(ok="green", info="cyan", warn="yellow", bad="red")
-ICON = {"ok": "✔", "info": "●", "warn": "▲", "bad": "✖"}
-ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
-ANSI_SPLIT = re.compile(r"(\x1b\[[0-9;]*[A-Za-z])")
-CLR = "\033[K" if USE_COLOR else ""
-
-def c(t, *styles):
-    if not USE_COLOR or not styles or t == "": return t
-    return f"\033[{';'.join(STY[s] for s in styles)}m{t}\033[0m"
-
-def vlen(s): return len(ANSI.sub("", s))
-def pad(s, n): return s + " " * max(0, n - vlen(s))
-def term_w(): return max(48, min(84, shutil.get_terminal_size((80, 24)).columns))
-def inner_w(): return term_w() - 4
-
-def clip(s, n):
-    if vlen(s) <= n: return s
-    out, cnt = [], 0
-    for tok in ANSI_SPLIT.split(s):
-        if ANSI.fullmatch(tok): out.append(tok); continue
-        room = n - 1 - cnt
-        if room > 0: out.append(tok[:room]); cnt += min(len(tok), room)
-    return "".join(out) + "…" + ("\033[0m" if USE_COLOR else "")
-
-def panel(title, lines, color="cyan"):
-    w = term_w(); inner = w - 4; bc = lambda s: c(s, color)
-    title = clip(title, inner - 2)
-    out = [bc("╭─") + c(f" {title} ", color, "bold") + bc("─" * max(0, w - vlen(title) - 5) + "╮")]
-    for line in lines:
-        if vlen(line) > inner:
-            if ANSI.search(line): parts = [clip(line, inner)]
-            else:
-                lead = len(line) - len(line.lstrip())
-                parts = textwrap.wrap(line, inner, subsequent_indent=" " * (lead + 2)) or [""]
-        else: parts = [line]
-        for p in parts: out.append(bc("│") + " " + pad(p, inner) + " " + bc("│"))
-    out.append(bc("╰" + "─" * (w - 2) + "╯"))
-    return "\n".join(out)
-
-def show(title, lines, color="cyan"): print("\n" + panel(title, lines, color) + "\n")
-def ok(m): print(c("✔ ", "green", "bold") + m)
-def err(m): print(c("✖ ", "red", "bold") + m)
-def info(m): print(c("● ", "cyan", "bold") + m)
-
-def pct_color(p): return "red" if p >= 100 else "yellow" if p >= 80 else "green"
-
-def bar(v, m, w=20, color="auto"):
-    ratio = v / m if m > 0 else 0; f = 0 if m <= 0 else min(w, round(w * ratio))
-    if color == "auto": color = pct_color(ratio * 100)
-    return c("█" * f, color) + c("░" * (w - f), "gray")
-
-def tgl(d, full=False): return f"{HARI[d.weekday()] if full else HARI[d.weekday()][:3]} {d.day:02d} {BULAN[d.month - 1]} {d.year}"
-
-def spark(vals, night=()):
-    mx = max(vals) or 1; out = []
-    for h, v in enumerate(vals):
-        if v <= 0: out.append(c("·", "gray")); continue
-        ch = "▁▂▃▄▅▆▇█"[min(7, int(v / mx * 7.999))]
-        out.append(c(ch, "red" if h in night else "cyan"))
-    return "".join(out)
-
-def night_hours(ch):
-    bs, be = hm(ch["bed_start"]), hm(ch["bed_end"]); end_h = (be + 59) // 60
-    return set(range(bs // 60, 24)) | set(range(0, end_h)) if bs > be else set(range(bs // 60, end_h))
-
-def menu_rows(entries):
-    inner = inner_w(); fmt = lambda k, t: f"{c(f'{k:>2}', 'cyan', 'bold')}  {t}"
-    if inner < 60: return [" " + fmt(k, t) for k, t in entries]
-    half = (len(entries) + 1) // 2; colw = inner // 2; rows = []
-    for i in range(half):
-        left = pad(" " + fmt(*entries[i]), colw)
-        right = fmt(*entries[i + half]) if i + half < len(entries) else ""
-        rows.append(left + right)
-    return rows
-
-def print_menu(title, items, back="Kembali", color="cyan", header=()):
-    entries = [(str(i), t) for i, t in enumerate(items, 1)] + [("0", back)]
-    show(title, list(header) + menu_rows(entries), color)
-
-def ask(msg): return input(c("❯ ", "cyan", "bold") + msg).strip()
-
-# ───────────────────────────── Database & logika ─────────────────────────────
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS child(id INTEGER PRIMARY KEY, name TEXT UNIQUE, age INT, daily_limit INT,
   self_limit INT, bed_start TEXT, bed_end TEXT);
@@ -132,7 +38,6 @@ def connect():
     db = sqlite3.connect(DB); db.row_factory = sqlite3.Row; db.executescript(SCHEMA)
     if not db.execute("SELECT 1 FROM rule").fetchone():
         db.executemany("INSERT INTO rule VALUES(?,?)",
-                       [(re.escape(a.lower().replace(" ", "")), c_) for c_, l in APPS.items() for a in l])
                        [(re.escape(a.lower().replace(" ", "")), c) for c, l in APPS.items() for a in l])
         db.commit()
     return db
@@ -241,94 +146,6 @@ def insights(db, ch, today):
             out.append(("ok", f"Saran: {name} 30 menit -> +{round(30 * ACTIVITIES[name])} menit bonus (maks {BONUS_CAP}/hari)."))
     return out or [("ok", "Pola pemakaian sehat. Pertahankan!")]
 
-# ───────────────────────────── Laporan (judul, baris) ─────────────────────────────
-def p_today(db, ch, d):
-    st = stats(db, ch, d); lim = eff_limit(db, ch, d); p = st["total"] / lim * 100 if lim else 0
-    bw = max(10, min(30, inner_w() - 32))
-    used_txt = c(fmt_min(st["total"]) + "/" + fmt_min(lim), "bold"); pct_txt = c(f"{p:.0f}%", pct_color(p), "bold")
-    L = [f" {c('Total', 'bold')}       {bar(st['total'], lim, bw)} {used_txt} ({pct_txt})", ""]
-    for cat in CATS:
-        v = st["cat"][cat]
-        if v > 0:
-            share = v / st["total"] * 100
-            L.append(f" {c(f'{cat:<10}', CATCOL[cat])} {bar(v, st['total'], bw, CATCOL[cat])} {fmt_min(v):>6} {c(f'{share:>3.0f}%', 'gray')}")
-    night = c(fmt_min(st["night"]), "red", "bold") if st["night"] > 0 else c(fmt_min(st["night"]), "green")
-    L += ["", f" {c('Pertama pakai', 'gray')}  {clock(st['first'])}    {c('Terakhir', 'gray')}  {clock(st['last'])}",
-          f" {c('Blok tanpa jeda terpanjang', 'gray')}  {fmt_min(st['longest'])}",
-          " " + c("Aktivitas jam tidur (" + ch["bed_start"] + "-" + ch["bed_end"] + ")", "gray") + "  " + night,
-          "", f" {c('Per jam', 'bold')}  " + spark(st["hourly"], night_hours(ch)),
-          "          " + "0     6     12    18   " + c("(merah = jam tidur)", "gray")]
-    for label, m in quiet_hits(db, ch, d): L.append(f" {c('▲', 'yellow', 'bold')} Melanggar blok '{label}': {fmt_min(m)}")
-    return f"{ch['name']} ({ch['age']} th) · {tgl(d)}", L
-
-def p_week(db, ch, d):
-    L = []; tot = []; edu = fun = 0; bw = max(8, min(18, inner_w() - 50))
-    for i in range(6, -1, -1):
-        x = d - timedelta(days=i); st = stats(db, ch, x); lim = eff_limit(db, ch, x); tot.append(st["total"])
-        edu += st["cat"]["edukasi"] + st["cat"]["produktif"]; fun += st["cat"]["hiburan"] + st["cat"]["game"]
-        nt = fmt_min(st["night"]); nt = c(f"{nt:>6}", "red", "bold") if st["night"] > 0 else c(f"{nt:>6}", "gray")
-        day = f"{HARI[x.weekday()][:3]} {x:%d/%m}"; day = c(day, "yellow") if x.weekday() >= 5 else day
-        L.append(f" {day} {bar(st['total'], lim, bw)} {fmt_min(st['total']):>7}  malam {nt}  mulai {clock(st['first'])}")
-    ed, fn = edu / max(1, edu + fun) * 100, fun / max(1, edu + fun) * 100
-    L += ["", f" {c('Tren', 'bold')}       {spark(tot)}",
-          f" {c('Rata-rata', 'bold')}  {fmt_min(mean(tot))}/hari",
-          f" {c('Edukasi+produktif', 'green')} {ed:.0f}%  vs  {c('hiburan+game', 'magenta')} {fn:.0f}%",
-          " " + c("█" * round(ed / 100 * 30), "green") + c("█" * (30 - round(ed / 100 * 30)), "magenta")]
-    return f"7 hari terakhir · {ch['name']}", L
-
-def p_insights(db, ch, d):
-    L = []; w = inner_w() - 5
-    for k, t in insights(db, ch, d):
-        for j, line in enumerate(textwrap.wrap(t, w)):
-            icon = c(ICON[k], KINDCOL[k], "bold") if j == 0 else " "
-            L.append(f" {icon} " + (c(line, "red") if k == "bad" else line))
-    return f"Wawasan · {ch['name']}", L
-
-def p_summary(db, kids, d):
-    L = []; bw = max(10, min(26, inner_w() - 36))
-    for n, ch in enumerate(kids):
-        st = stats(db, ch, d); lim = eff_limit(db, ch, d)
-        top = max(st["cat"].items(), key=lambda x: x[1], default=("-", 0))[0]
-        warns = sum(1 for k, _ in insights(db, ch, d) if k in ("warn", "bad"))
-        wtxt = c(f"{warns} peringatan", "yellow" if warns else "green", "bold")
-        if n: L.append("")
-        L += [" " + c(ch["name"], "bold") + " " + c("(" + str(ch["age"]) + " th)", "gray"),
-              f"   {bar(st['total'], lim, bw)} {fmt_min(st['total'])}/{fmt_min(lim)}",
-              f"   dominan {c(top, CATCOL.get(top, 'gray'))} · malam {fmt_min(st['night'])} · pertama {clock(st['first'])} · {wtxt}"]
-    return f"Ringkasan keluarga · {tgl(d, True)}", L
-
-def p_activity(db, ch, d):
-    b = bonus_today(db, ch["id"], d)
-    L = [f" {c('Bonus hari ini', 'bold')}  {bar(b, BONUS_CAP, 20, 'cyan')} {b}/{BONUS_CAP} menit", "", f" {c('Pilihan aktivitas', 'bold')} (tarif bonus):"]
-    L += [f"  {c(f'{i}', 'cyan', 'bold')}. {k:<26}{c(f'x{v}', 'gray')}" for i, (k, v) in enumerate(ACTIVITIES.items(), 1)]
-    L += ["", f" {c('Riwayat terbaru', 'bold')}:"]
-    rows = db.execute("SELECT * FROM activity WHERE child_id=? ORDER BY ts DESC LIMIT 12", (ch["id"],)).fetchall()
-    for r in rows: L.append("  " + c(f"{datetime.fromtimestamp(r['ts']):%d/%m %H:%M}", "gray") + f"  {r['name']:<26}{r['minutes']}m")
-    if not rows: L.append(" " + c("(belum ada)", "gray"))
-    return f"Aktivitas offline · {ch['name']}", L
-
-def p_rules(db, ch, d):
-    L = [f" {c('Batas harian orang tua', 'gray')} : {c(fmt_min(ch['daily_limit']), 'bold')}",
-         f" {c('Batas pilihan anak', 'gray')}     : {c(fmt_min(ch['self_limit']) if ch['self_limit'] else '-', 'bold')}",
-         f" {c('Jam tidur', 'gray')}              : {c(ch['bed_start'] + '-' + ch['bed_end'], 'bold')}", "", f" {c('Blok tenang', 'bold')}:"]
-    qs = db.execute("SELECT * FROM quiet WHERE child_id=?", (ch["id"],)).fetchall()
-    for q in qs:
-        days = ",".join(HARI[int(x)][:3] for x in q["days"].split(",") if x != "")
-        L.append(f"   {q['label']:<14}{c(q['start'] + '-' + q['end'], 'cyan')}  {c(days, 'gray')}")
-    if not qs: L.append("  " + c("(belum ada)", "gray"))
-    return f"Aturan · {ch['name']}", L
-
-def notice_lines():
-    txt = textwrap.wrap(" ".join(NOTICE.split()), inner_w() - 2)
-    return [" " + (l.replace("TRANSPARANSI:", c("TRANSPARANSI:", "bold"), 1) if i == 0 else l) for i, l in enumerate(txt)]
-
-def p_transparency(db, ch, d):
-    L = notice_lines() + ["", c("Log audit terakhir:", "bold")]
-    for r in db.execute("SELECT * FROM audit ORDER BY ts DESC LIMIT 15"):
-        L.append(" " + c(f"{datetime.fromtimestamp(r['ts']):%d/%m %H:%M}", "gray") + " " + c("[" + r["actor"] + "]", "cyan") + " " + r["action"])
-    return "Transparansi", L
-
-# ───────────────────────────── Monitor ─────────────────────────────
 def bar(v, m, w=20): f = 0 if m <= 0 else min(w, round(w * v / m)); return "█" * f + "░" * (w - f)
 def spark(vals): mx = max(vals) or 1; return "".join(" ▁▂▃▄▅▆▇█"[min(8, int(v / mx * 8 + (0.999 if v > 0 else 0)))] for v in vals)
 ICON = {"ok": "✔", "info": "ℹ", "warn": "▲", "bad": "✖"}
@@ -401,12 +218,6 @@ def active_app():
     except Exception: pass
     return None
 
-def live_alert(msg, color):
-    sys.stdout.write("\r" + CLR); print("\a" + c(f"[{datetime.now():%H:%M}] ▲ ", color, "bold") + msg)
-
-def monitor(db, ch, interval=5, probe=active_app):
-    show("Transparansi", notice_lines(), "cyan")
-    info(f"Memantau {c(ch['name'], 'bold')} tiap {interval}s. Tekan Ctrl+C untuk berhenti.\n")
 def monitor(db, ch, interval=5, probe=active_app):
     print(NOTICE + f"\n\nMemantau {ch['name']} tiap {interval}s. Ctrl+C untuk berhenti.\n")
     cur = start = cont = None; fired = set(); idle_since = None
@@ -423,17 +234,6 @@ def monitor(db, ch, interval=5, probe=active_app):
                 if now - idle_since >= TOKEN_GAP: cont = None
             d = date.today(); st = stats(db, ch, d); run = (now - start) / 60 if cur else 0
             lim = eff_limit(db, ch, d); used = st["total"] + run
-            for th, msg, col in ((80, "80% batas tercapai", "yellow"), (100, "BATAS HARIAN TERCAPAI - saatnya istirahat/aktivitas lain", "red")):
-                if used / lim * 100 >= th and (d, th) not in fired: fired.add((d, th)); live_alert(f"{ch['name']}: {msg}", col)
-            if cont and (now - cont) / 60 >= BREAK_AFTER and ("brk", int(cont)) not in fired:
-                fired.add(("brk", int(cont))); live_alert("Istirahat 5 menit & lihat jauh 20 detik (aturan 20-20-20).", "cyan")
-            who = f"{c('●', 'green', 'bold')} {c(cur, 'bold')} {c('[' + classify(db, cur) + ']', 'gray')} {fmt_min(run)}" if cur else c("○ tidak ada aplikasi aktif", "gray")
-            line = f" {who}  │  hari ini {bar(used, lim, 12)} {fmt_min(used)}/{fmt_min(lim)}"
-            sys.stdout.write("\r" + clip(line, term_w() - 1) + CLR); sys.stdout.flush()
-            time.sleep(interval)
-    except KeyboardInterrupt: flush(time.time()); print("\n"); ok("Berhenti. Data tersimpan.")
-
-# ───────────────────────────── Data demo ─────────────────────────────
             for th, msg in ((80, "80% batas tercapai"), (100, "BATAS HARIAN TERCAPAI - saatnya istirahat/aktivitas lain")):
                 if used / lim * 100 >= th and (d, th) not in fired: fired.add((d, th)); print(f"\a[{datetime.now():%H:%M}] {ch['name']}: {msg}")
             if cont and (now - cont) / 60 >= BREAK_AFTER and ("brk", int(cont)) not in fired:
@@ -461,9 +261,6 @@ def seed(db, pin="1234"):
             if n == "Aisyah" and back in (2, 5, 9): add_activity(db, db.execute("SELECT * FROM child WHERE id=?", (i,)).fetchone(), "membaca buku", 40, a + 17 * 3600)
         for off, (app, m) in zip((200, 120, 60), (("Roblox", 45), ("YouTube", 30), ("Ruangguru", 40))): add_session(db, i, app, now - off * 60, now - (off - m) * 60 if off > m else now - 60)
     set_pin(db, pin); audit(db, "sistem", "data demo dibuat"); db.commit()
-    ok(f"Data demo siap (PIN orang tua: {c(pin, 'bold')}).")
-
-# ───────────────────────────── Input & menu ─────────────────────────────
     print(f"Data demo siap (PIN orang tua: {pin}).")
 
 def ask(msg): return input(msg).strip()
@@ -484,29 +281,11 @@ def get_child_by_id(db, cid): return db.execute("SELECT * FROM child WHERE id=?"
 def pick_child(db):
     kids = all_kids(db)
     if not kids: return None
-    show("Pilih anak", [f" {c(f'{i:>2}', 'cyan', 'bold')}  {k['name']} {c('(' + str(k['age']) + ' th)', 'gray')}" for i, k in enumerate(kids, 1)])
     for i, k in enumerate(kids, 1): print(f"  {i}. {k['name']}")
     n = ask_int("Pilih anak (nomor): ")
     return kids[n - 1] if n and 1 <= n <= len(kids) else None
 
 def menu_log_activity(db, ch):
-    print()
-    for i, (k, v) in enumerate(ACTIVITIES.items(), 1): print(f"  {c(f'{i:>2}', 'cyan', 'bold')}  {k:<26}{c(f'x{v}', 'gray')}")
-    n = ask_int("Nomor aktivitas: "); mn = ask_int("Durasi (menit): ")
-    if not n or not mn or mn <= 0 or not 1 <= n <= len(ACTIVITIES): err("Input tidak valid."); return
-    ok(f"+{add_activity(db, ch, list(ACTIVITIES)[n - 1], mn)} menit bonus")
-
-def menu_set_limit(db, ch):
-    v = ask_int("Batas harian baru (menit): ")
-    if not v or v <= 0: err("Input tidak valid."); return
-    db.execute("UPDATE child SET daily_limit=?, self_limit=NULL WHERE id=?", (v, ch["id"]))
-    audit(db, "orang tua", f"ubah batas {ch['name']} -> {v}m"); ok("Batas tersimpan.")
-
-def menu_set_bed(db, ch):
-    s = ask("Jam tidur (HH:MM-HH:MM): ")
-    if not re.fullmatch(r"\d\d:\d\d-\d\d:\d\d", s): err("Format salah."); return
-    a, b = s.split("-"); db.execute("UPDATE child SET bed_start=?, bed_end=? WHERE id=?", (a, b, ch["id"]))
-    audit(db, "orang tua", f"ubah jam tidur {ch['name']} {s}"); ok("Jam tidur tersimpan.")
     for i, (k, v) in enumerate(ACTIVITIES.items(), 1): print(f"  {i}. {k:<26}x{v}")
     n = ask_int("Nomor aktivitas: "); mn = ask_int("Durasi (menit): ")
     if not n or not mn or mn <= 0 or not 1 <= n <= len(ACTIVITIES): print("Input tidak valid."); return
@@ -528,25 +307,6 @@ def menu_set_self_limit(db, ch):
     v = ask_int(f"Batas harian pilihanmu (menit, maks {ch['daily_limit']}): ")
     if v is not None and 15 <= v <= ch["daily_limit"]:
         db.execute("UPDATE child SET self_limit=? WHERE id=?", (v, ch["id"]))
-        audit(db, ch["name"], f"atur batas sendiri {v}m"); ok("Batas tersimpan.")
-    else: err("Batas harus antara 15 menit dan batas orang tua.")
-
-def menu_add_child(db):
-    name = ask("Nama anak: "); age = ask_int("Umur: "); lim = ask_int("Batas harian (menit, default 120): ") or 120
-    if not name or not age: err("Input tidak valid."); return
-    try: db.execute("INSERT INTO child(name,age,daily_limit,bed_start,bed_end) VALUES(?,?,?,?,?)", (name, age, lim, "21:00", "05:30")); db.commit()
-    except sqlite3.IntegrityError: err("Nama sudah ada."); return
-    if not db.execute("SELECT 1 FROM meta WHERE k='pin'").fetchone(): set_pin(db, getpass.getpass(c("❯ ", "cyan", "bold") + "Buat PIN orang tua: "))
-    audit(db, "orang tua", f"tambah anak {name}"); ok(f"{name} ditambahkan.")
-
-def menu_add_rule(db):
-    pattern = ask("Pola nama aplikasi: ").lower()
-    print()
-    for i, cat in enumerate(CATS, 1): print(f"  {c(f'{i:>2}', 'cyan', 'bold')}  {c(cat, CATCOL[cat])}")
-    n = ask_int("Nomor kategori: ")
-    if not pattern or not n or not 1 <= n <= len(CATS): err("Input tidak valid."); return
-    db.execute("REPLACE INTO rule VALUES(?,?)", (pattern, CATS[n - 1])); audit(db, "orang tua", f"aturan {pattern}->{CATS[n - 1]}"); db.commit()
-    ok("Aturan tersimpan.")
         audit(db, ch["name"], f"atur batas sendiri {v}m"); print("Batas tersimpan.")
     else: print("Batas harus antara 15 menit dan batas orang tua.")
 
@@ -571,32 +331,6 @@ PARENT_MENU = ["Ringkasan keluarga", "Laporan harian", "Laporan 7 hari", "Wawasa
                "Mulai monitor", "Ganti anak"]
 CHILD_MENU = ["Hari ini", "7 hari", "Wawasan", "Aktivitas offline", "Catat aktivitas", "Atur batas sendiri", "Transparansi"]
 
-def parent_menu(db):
-    ch = pick_child(db)
-    if not ch: err("Pilihan tidak valid."); return
-    cid = ch["id"]
-    while True:
-        ch = get_child_by_id(db, cid)
-        print_menu(f"MODE ORANG TUA · {ch['name']}", PARENT_MENU, "Kembali", "blue")
-        c_ = ask("Pilih: ")
-        if c_ == "0": return
-        elif c_ == "1": show(*p_summary(db, all_kids(db), date.today()), "blue")
-        elif c_ == "2": show(*p_today(db, ch, ask_day()), "blue")
-        elif c_ == "3": show(*p_week(db, ch, date.today()), "blue")
-        elif c_ == "4": show(*p_insights(db, ch, date.today()), "blue")
-        elif c_ == "5": show(*p_activity(db, ch, date.today()), "blue")
-        elif c_ == "6": show(*p_rules(db, ch, date.today()), "red")
-        elif c_ == "7": menu_log_activity(db, ch)
-        elif c_ == "8": menu_set_limit(db, ch)
-        elif c_ == "9": menu_set_bed(db, ch)
-        elif c_ == "10": menu_add_child(db)
-        elif c_ == "11": menu_add_rule(db)
-        elif c_ == "12": monitor(db, ch)
-        elif c_ == "13":
-            new = pick_child(db)
-            if new: cid = new["id"]
-            else: err("Pilihan tidak valid.")
-        else: err("Pilihan tidak valid.")
 def print_menu(title, items):
     print(f"\n=== {title} ===")
     for i, t in enumerate(items, 1): print(f"  {i}. {t}")
@@ -633,38 +367,6 @@ def child_menu(db, ch):
     cid = ch["id"]
     while True:
         ch = get_child_by_id(db, cid)
-        print_menu(f"MODE ANAK · {ch['name']}", CHILD_MENU, "Kembali", "green")
-        c_ = ask("Pilih: ")
-        if c_ == "0": return
-        elif c_ == "1": show(*p_today(db, ch, ask_day()), "green")
-        elif c_ == "2": show(*p_week(db, ch, date.today()), "green")
-        elif c_ == "3": show(*p_insights(db, ch, date.today()), "green")
-        elif c_ == "4": show(*p_activity(db, ch, date.today()), "green")
-        elif c_ == "5": menu_log_activity(db, ch)
-        elif c_ == "6": menu_set_self_limit(db, ch)
-        elif c_ == "7": show(*p_transparency(db, ch, date.today()), "green")
-        else: err("Pilihan tidak valid.")
-
-def main():
-    db = connect()
-    head = [" " + c("Pendamping kebiasaan layar anak", "bold"), " " + c("Transparan · anak dapat melihat semua data yang dicatat", "gray"), ""]
-    while True:
-        print_menu("SADARLAYAR", ["Masuk sebagai orang tua", "Masuk sebagai anak", "Buat data demo"], "Keluar", "cyan", head)
-        c_ = ask("Pilih: ")
-        if c_ == "0": print(c("\nSampai jumpa! 👋\n", "gray")); return
-        elif c_ == "1":
-            if not all_kids(db): info("Belum ada anak. Tambahkan dulu."); menu_add_child(db); continue
-            if check_pin(db, getpass.getpass(c("❯ ", "cyan", "bold") + "PIN orang tua: ")): audit(db, "orang tua", "masuk mode orang tua"); parent_menu(db)
-            else: err("PIN salah.")
-        elif c_ == "2":
-            ch = pick_child(db)
-            if ch: child_menu(db, ch)
-            else: err("Belum ada data anak atau pilihan tidak valid.")
-        elif c_ == "3": seed(db)
-        else: err("Pilihan tidak valid.")
-
-if __name__ == "__main__":
-    main()
         print_menu(f"MODE ANAK | {ch['name']}", CHILD_MENU)
         c = ask("Pilih: ")
         if c == "0": return
@@ -677,14 +379,6 @@ if __name__ == "__main__":
         elif c == "7": show(p_transparency(db, ch, date.today()))
         else: print("Pilihan tidak valid.")
 
-def login_parent(db):
-    for sisa in range(2, -1, -1):
-        if check_pin(db, getpass.getpass("PIN orang tua: ")): return True
-        print(f"PIN salah. Sisa percobaan: {sisa}")
-    audit(db, "sistem", "login orang tua gagal 3x berturut-turut")
-    print("Terlalu banyak percobaan. Kembali ke menu utama.")
-    return False
-
 def main():
     db = connect()
     while True:
@@ -693,7 +387,8 @@ def main():
         if c == "0": return
         elif c == "1":
             if not all_kids(db): print("Belum ada anak. Tambahkan dulu."); menu_add_child(db); continue
-            if login_parent(db): audit(db, "orang tua", "masuk mode orang tua"); parent_menu(db)
+            if check_pin(db, getpass.getpass("PIN orang tua: ")): audit(db, "orang tua", "masuk mode orang tua"); parent_menu(db)
+            else: print("PIN salah.")
         elif c == "2":
             ch = pick_child(db)
             if ch: child_menu(db, ch)
