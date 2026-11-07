@@ -677,6 +677,14 @@ if __name__ == "__main__":
         elif c == "7": show(p_transparency(db, ch, date.today()))
         else: print("Pilihan tidak valid.")
 
+def login_parent(db):
+    for sisa in range(2, -1, -1):
+        if check_pin(db, getpass.getpass("PIN orang tua: ")): return True
+        print(f"PIN salah. Sisa percobaan: {sisa}")
+    audit(db, "sistem", "login orang tua gagal 3x berturut-turut")
+    print("Terlalu banyak percobaan. Kembali ke menu utama.")
+    return False
+
 def main():
     db = connect()
     while True:
@@ -685,8 +693,7 @@ def main():
         if c == "0": return
         elif c == "1":
             if not all_kids(db): print("Belum ada anak. Tambahkan dulu."); menu_add_child(db); continue
-            if check_pin(db, getpass.getpass("PIN orang tua: ")): audit(db, "orang tua", "masuk mode orang tua"); parent_menu(db)
-            else: print("PIN salah.")
+            if login_parent(db): audit(db, "orang tua", "masuk mode orang tua"); parent_menu(db)
         elif c == "2":
             ch = pick_child(db)
             if ch: child_menu(db, ch)
